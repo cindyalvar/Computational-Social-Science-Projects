@@ -12,3 +12,4 @@ git status
 git add *
 git status
 git commit -m "Pushing my first changes for Project 1"
+git push
