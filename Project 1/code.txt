@@ -1,0 +1,14 @@
+pwd
+ls
+cd git
+git clone https://github.com/cindyalvar/Computational-Social-Science-Projects.git
+cd Computational-Social Science-Projects/
+mkdir "Project 1"
+ls
+cd Project\ 1/
+touch code.txt
+nano code.txt
+git status
+git add *
+git status
+git commit -m "Pushing my first changes for Project 1"
