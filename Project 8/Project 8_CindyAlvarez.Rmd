@@ -1,0 +1,684 @@
+---
+title: "Project 8 Template"
+output: pdf_document
+---
+
+```{r setup}
+# Add to this package list for additional SL algorithms
+pacman::p_load(
+  tidyverse,
+  ggthemes,
+  ltmle,
+  tmle,
+  SuperLearner,
+  tidymodels,
+  caret,
+  dagitty,
+  ggdag,
+  arm,
+  xgboost,
+  here,
+  ggplot2,
+  dplyr)
+
+heart_disease <- read_csv("heart_disease_tmle.csv")
+
+```
+
+# Introduction
+
+Heart disease is the leading cause of death in the United States, and treating it properly is an important public health goal. However, it is a complex disease with several different risk factors and potential treatments. Physicians typically recommend changes in diet, increased exercise, and/or medication to treat symptoms, but it is difficult to determine how effective any one of these factors is in treating the disease. In this project, you will explore SuperLearner, Targeted Maximum Likelihood Estimation (TMLE), and Longitudinal Targeted Maximum Likelihood Estimation (LTMLE). Using a simulated dataset, you will explore whether taking blood pressure medication reduces mortality risk. 
+
+# Data
+
+This dataset was simulated using R (so it does not come from a previous study or other data source). It contains several variables:
+
+\begin{itemize}
+    \item \textbf{blood\_pressure\_medication}: Treatment indicator for whether the individual took blood pressure medication (0 for control, 1 for treatment)
+    \item \textbf{mortality}: Outcome indicator for whether the individual passed away from complications of heart disease (0 for no, 1 for yes)
+    \item \textbf{age}: Age at time 1
+    \item \textbf{sex\_at\_birth}: Sex assigned at birth (0 female, 1 male)
+    \item \textbf{simplified\_race}: Simplified racial category. (1: White/Caucasian, 2: Black/African American, 3: Latinx, 4: Asian American, \newline 5: Mixed Race/Other)
+    \item \textbf{income\_thousands}: Household income in thousands of dollars
+    \item \textbf{college\_educ}: Indicator for college education (0 for no, 1 for yes)
+    \item \textbf{bmi}: Body mass index (BMI)
+    \item \textbf{chol}: Cholesterol level
+    \item \textbf{blood\_pressure}: Systolic blood pressure 
+    \item \textbf{bmi\_2}: BMI measured at time 2
+    \item \textbf{chol\_2}: Cholesterol measured at time 2
+    \item \textbf{blood\_pressure\_2}: BP measured at time 2
+    \item \textbf{blood\_pressure\_medication\_2}: Whether the person took treatment at time period 2 
+\end{itemize}
+
+For the "SuperLearner" and "TMLE" portions, you can ignore any variable that ends in "\_2", we will reintroduce these for LTMLE.
+
+# SuperLearner
+
+## Modeling
+
+Fit a SuperLearner model to estimate the probability of someone dying from complications of heart disease, conditional on treatment and the relevant covariates. Do the following:
+
+\begin{enumerate}
+    \item Choose a library of at least 5 machine learning algorithms to evaluate. \textbf{Note}: We did not cover how to hyperparameter tune constituent algorithms within SuperLearner in lab, but you are free to do so if you like (though not required to for this exercise). 
+    \item Split your data into train and test sets.
+    \item Train SuperLearner
+    \item Report the risk and coefficient associated with each model, and the performance of the discrete winner and SuperLearner ensemble
+    \item Create a confusion matrix and report your overall accuracy, recall, and precision
+\end{enumerate}
+
+```{r fit sl model}
+# Fit SuperLearner Model
+
+# Prepare data for SuperLearner.
+
+## Drop the variables that have _2
+
+heart_disease_sl <- heart_disease %>% 
+  dplyr :: select(age, sex_at_birth, simplified_race, college_educ, income_thousands, bmi,
+         blood_pressure, chol, blood_pressure_medication, mortality)
+glimpse(heart_disease_sl)
+
+## sl lib
+
+listWrappers()
+
+# Will use the following 5 algorithms: 1) SL.mean (to serve as a baseline), 2) SL.glmnet, 
+# 3) SL.randomForest, 4) SL.xgboost, 5) SL.bayesglm
+SL.library <- c("SL.mean", "SL.glmnet", "SL.randomForest", "SL.xgboost", "SL.bayesglm")
+
+## Train/Test split
+
+heart_disease_sl_split <-
+  initial_split(heart_disease_sl, prop = 3/4) # create initial split
+
+# Training 
+# ----------
+train <- # Declare the training set with rsample::training()
+  training(heart_disease_sl_split)
+
+# y_train 
+y_train <- 
+  train %>% 
+  # pull and save as vector
+  pull(mortality)    
+
+# x_train  
+x_train <-
+  train %>%
+  # drop the target variable 
+  dplyr :: select(-mortality)   
+
+# Testing 
+# ----------
+test <- 
+  testing(heart_disease_sl_split)
+
+# y test
+y_test <- 
+  test %>%
+  pull(mortality)
+
+# x test
+x_test <- 
+  test %>%
+  dplyr :: select(-mortality) 
+
+## Train SuperLearner
+
+# set seed
+set.seed(987)
+
+# multiple models  
+# ----------
+sl = SuperLearner(Y = y_train,
+                  X = x_train,
+                  family = binomial(),
+                  SL.library = SL.library)
+
+## Risk and Coefficient of each model
+
+sl$cvRisk
+sl$coef
+
+## Discrete winner and superlearner ensemble performance
+
+discrete_winner <- which.min(sl$cvRisk)
+winner_name <- SL.library[discrete_winner]
+
+# predictions
+# ----------
+preds <- 
+  predict(sl,             # use the superlearner not individual models
+          x_test,         # prediction on test set
+          onlySL = TRUE)  # use only models that were found to be useful (had weights)
+
+
+# start with y_test
+validation <- 
+  y_test %>%
+  # add our predictions - first column of predictions
+  bind_cols(preds$pred[,1]) %>% 
+  # rename columns
+  rename(obs = `...1`,      # actual observations 
+         pred = `...2`) %>% # predicted prob
+  # change pred column so that obs above .5 are 1, otherewise 0
+  mutate(pred = ifelse(pred >= .5, 
+                           1,
+                           0))
+
+# view
+head(validation)
+
+## Confusion Matrix
+
+caret::confusionMatrix(as.factor(validation$pred),
+                       as.factor(validation$obs))
+
+# Overall accuracy: 0.586
+# Overall recall (aka sensistivity): 0.3598
+# Overall precision (aka positive predictive value):  0.5955
+
+```
+
+## Discussion Questions
+
+\begin{enumerate}
+    \item Why should we, in general, prefer the SuperLearner ensemble to the discrete winner in cross-validation? Or in other words, what is the advantage of "blending" algorithms together and giving them each weights, rather than just using the single best algorithm (with best being defined as minimizing risk)?
+\end{enumerate}
+
+SuperLearner allows us to combine algorithms, which each pick up on different relationships. Doing this can help us reduce model bias and variance at the same time. On the other hand using the "best" single algorithm (defined by minimizing risk) could mean taht we choose an algorithm that had the lowest CV risk by chance, especially if risks are close. Choosing the single best model may also overfit to the validation set. SuperLearner reduces this by blending across models rather than fully committing to one.
+
+# Targeted Maximum Likelihood Estimation
+
+## Causal Diagram
+
+TMLE requires estimating two models:
+
+\begin{enumerate}
+    \item The outcome model, or the relationship between the outcome and the treatment/predictors, $P(Y|(A,W)$.
+    \item The propensity score model, or the relationship between assignment to treatment and predictors $P(A|W)$
+\end{enumerate}
+
+Using ggdag and daggity, draw a directed acylcic graph (DAG) that describes the relationships between the outcome, treatment, and covariates/predictors. Note, if you think there are covariates that are not related to other variables in the dataset, note this by either including them as freestanding nodes or by omitting them and noting omissions in your discussion.
+
+Cindy note: I think all covariates are related to other variables in the dataset, which is reflected in the DAG below. I also use adjustmentSets() to help me identify variable sets that I can condition on to block non-causal paths without blocking the causal effect (given my covariates).
+
+```{r dag1}
+# DAG for TMLE
+heart_dag <- dagitty('dag {
+  mortality [outcome, pos="6,0"]
+  blood_pressure_medication [exposure, pos="2,0"]
+  age [pos="0,1"]
+  sex_at_birth [pos="1,2"]
+  simplified_race [pos="2,2"]
+  income_thousands [pos="3,2"]
+  college_educ [pos="4,2"]
+  bmi [pos="1,1"]
+  chol [pos="3,1"]
+  blood_pressure [pos="4,1"]
+  
+  age -> bmi
+  age -> blood_pressure
+  age -> chol
+  age -> mortality
+  
+  sex_at_birth -> bmi
+  sex_at_birth -> blood_pressure
+  sex_at_birth -> chol
+  
+  simplified_race -> blood_pressure
+  simplified_race -> chol
+  
+  income_thousands -> college_educ
+  income_thousands -> bmi
+  
+  college_educ -> bmi
+  
+  bmi -> blood_pressure
+  bmi -> chol
+  bmi -> mortality
+  
+  chol -> blood_pressure
+  chol -> mortality
+  
+  blood_pressure -> blood_pressure_medication
+  blood_pressure -> mortality
+  
+  blood_pressure_medication -> mortality
+  
+  income_thousands -> blood_pressure_medication
+  college_educ -> blood_pressure_medication
+}')
+
+#Plot the DAG
+
+heart_dag_tidy <- tidy_dagitty(heart_dag)
+dag_plot <- ggdag(heart_dag_tidy, layout = "auto") + 
+  theme_dag() +
+  # Nodes with better visibility
+  geom_dag_point(aes(color = name), size = 18, alpha = 0.7) +
+  # Text styling: BLACK text only
+  geom_dag_text(size = 3, 
+                color = "black", 
+                fontface = "bold",
+                family = "sans") +  # Use sans-serif font for clarity
+  # Improved edges
+  geom_dag_edges(aes(), 
+               edge_width = 0.6,
+               arrow_directed = grid::arrow(length = grid::unit(7, "pt"), type = "closed")) +
+  scale_color_manual(values = c(
+    "mortality" = "#FF5555",                
+    "blood_pressure_medication" = "#5555FF", 
+    "age" = "#55AA55",                      
+    "sex_at_birth" = "#AA55AA",              
+    "simplified_race" = "#CD8500",           
+    "income_thousands" = "#00CDCD",         
+    "college_educ" = "#FF69B4",             
+    "bmi" = "#A52A2A",                     
+    "chol" = "#FFD700",                     
+    "blood_pressure" = "#8E8E8E"             
+  )) +
+  labs(title = "Directed Acyclic Graph (DAG) for Heart Disease Study",
+       subtitle = "Relationships between mortality, blood pressure medication, and covariates",
+       caption = "Note: Red = outcome, Blue = treatment, others = covariates") +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(face = "italic")
+  )
+
+# Display the plot
+print(dag_plot)
+
+# Identify adjustment sets for estimating the causal effect of treatment on outcome
+adjustment_sets <- adjustmentSets(heart_dag, exposure = "blood_pressure_medication", outcome = "mortality", type = "minimal")
+print("Minimal adjustment sets for estimating the effect of blood pressure medication on mortality:")
+print(adjustment_sets)
+
+```
+
+## TMLE Estimation
+
+Use the `tmle` package to estimate a model for the effect of blood pressure medication on the probability of mortality. Do the following:
+
+\begin{enumerate}
+    \item Use the same SuperLearner library you defined earlier
+    \item Use the same outcome model and propensity score model that you specified in the DAG above. If in your DAG you concluded that it is not possible to make a causal inference from this dataset, specify a simpler model and note your assumptions for this step.
+    \item Report the average treatment effect and any other relevant statistics
+\end{enumerate}
+
+
+AdjustemtnSets above allowed me to identify sets of variables that if I condition/adjust for, would block the non-causal paths without blocking the causal effect. Below I use TMLE and the following minimal adjustment set: age, blood_pressure, bmi, and chol. Note that this took a long time to run on my computer so I was unable to run the TMLE using the other two sets. However, I would have liked to compare the results from the three sets if I had enough time/computational power.
+```{r tmle}
+
+# Above, I identified three possible minimal adjustment sets:
+# 1. { age, blood_pressure, bmi, chol }
+# 2. { age, blood_pressure, bmi, sex_at_birth }
+# 3. { blood_pressure, college_educ, income_thousands }
+# I'll use the first set for this analysis 
+
+# use heart_disease_sl
+heart_disease_tmle <- heart_disease_sl
+
+# Examine the structure
+str(heart_disease_tmle)
+
+# Make sure variables are properly formatted
+heart_disease_tmle <- heart_disease_tmle %>%
+  mutate(
+    # Ensure binary variables are 0/1
+    mortality = as.numeric(mortality),
+    blood_pressure_medication = as.numeric(blood_pressure_medication),
+    sex_at_birth = as.numeric(sex_at_birth),
+    college_educ = as.numeric(college_educ),
+    # Ensure simplified_race is a factor
+    simplified_race = as.factor(simplified_race)
+  )
+
+# Define the SuperLearner library (same as above)
+SL.library <- c("SL.mean", "SL.glmnet", "SL.randomForest", "SL.xgboost", "SL.bayesglm")
+
+# Extract variables for TMLE
+Y <- heart_disease_tmle$mortality  # Outcome
+A <- heart_disease_tmle$blood_pressure_medication  # Treatment
+
+# Extract covariates based on the first minimal adjustment set from our DAG
+# { age, blood_pressure, bmi, chol }
+W <- heart_disease_tmle %>%
+  dplyr:: select(age, blood_pressure, bmi, chol)
+
+# Double-check the data
+summary(Y)
+summary(A)
+summary(W)
+
+# Run TMLE
+set.seed(42)  # For reproducibility
+
+tmle_result <- tmle(
+  Y = Y,  # Outcome: mortality
+  A = A,  # Treatment: blood pressure medication
+  W = W,  # Covariates: from minimal adjustment set
+  Q.SL.library = SL.library,  # SuperLearner library for outcome model
+  g.SL.library = SL.library,  # SuperLearner library for propensity score model
+  family = "binomial"  # Binary outcome
+)
+
+# Print TMLE results
+print(tmle_result)
+
+# Extract the ATE
+ate <- tmle_result$estimates$ATE
+ate_ci <- c(tmle_result$estimates$ATE$CI[1], tmle_result$estimates$ATE$CI[2])
+ate_pvalue <- tmle_result$estimates$ATE$pvalue
+
+# Print the key results
+cat("Average Treatment Effect (ATE):", round(ate$psi, 4), "\n")
+cat("95% Confidence Interval:", round(ate_ci[1], 4), "to", round(ate_ci[2], 4), "\n")
+cat("P-value:", round(ate_pvalue, 4), "\n")
+
+# Interpretation based on the sign of the ATE
+if (ate$psi < 0) {
+  cat("The negative ATE suggests that blood pressure medication reduces mortality risk.\n")
+} else if (ate$psi > 0) {
+  cat("The positive ATE suggests that blood pressure medication increases mortality risk.\n")
+} else {
+  cat("The ATE is effectively zero, suggesting no effect of blood pressure medication on mortality.\n")
+}
+
+
+
+```
+
+## Discussion Questions
+
+\begin{enumerate}
+    \item What is a "double robust" estimator? Why does it provide a guarantee of consistency if either the outcome model or propensity score model is correctly specified? Or in other words, why does mispecifying one of the models not break the analysis? \textbf{Hint}: When answering this question, think about how your introductory statistics courses emphasized using theory to determine the correct outcome model, and in this course how we explored the benefits of matching.
+\end{enumerate}
+
+# Double Robust Estimators
+
+A double robust estimator combines an outcome regression model, which models the relationship between covariates, treatment, and outcome, with a propensity score model, which models the probability of treatment assignment given covariates. Double robust methods (like TMLE) use both models in a way that gives us "two chances" to get the right answer. When we use an outcome model approach, we need to correctly specify the outcome model to get consistent estimates. When we use a pure propensity score approach like inverse probability weighting, we need to correctly specify the propensity model. Double robust estimators combine these approaches mathematically so that if either the outcome model is correct or the propensity model is correct, the estimator is consistent. 
+
+Traditional statistics courses emphasized theory-driven outcome modeling, focusing on getting the functional form right. Methods like matching instead focus on balancing covariates between treatment groups (like propensity score approaches). Double robust methods give us the best of both worlds because we can leverage our theoretical knowledge of outcome processes (as I did in the DAG step above) while also using propensity scores to account for selection bias. Instead of having to choose between these paradigms and being completely wrong if our choice fails, double robust methods allow us to be partially right and still get consistent estimates.
+
+# LTMLE Estimation
+
+Now imagine that everything you measured up until now was in "time period 1". Some people either choose not to or otherwise lack access to medication in that time period, but do start taking the medication in time period 2. Imagine we measure covariates like BMI, blood pressure, and cholesterol at that time for everyone in the study (indicated by a "_2" after the covariate name). 
+
+## Causal Diagram
+
+Update your causal diagram to incorporate this new information. \textbf{Note}: If your groups divides up sections and someone is working on LTMLE separately from TMLE then just draw a causal diagram even if it does not match the one you specified above.
+
+\textbf{Hint}: Check out slide 27 from Maya's lecture, or slides 15-17 from Dave's second slide deck in week 8 on matching.
+
+\textbf{Hint}: Keep in mind that any of the variables that end in "\_2" are likely affected by both the previous covariates and the first treatment when drawing your DAG.
+
+```{r dag2}
+# DAG for LTMLE
+
+# Create a structured dag with all variables
+structured_dag_full <- dagitty('dag {
+  mortality [outcome, pos="6,0"]
+  
+  blood_pressure_medication [exposure, pos="2,0"]
+  age [pos="0,2"]
+  sex_at_birth [pos="0,1"]
+  simplified_race [pos="0,0"]
+  income_thousands [pos="0,-1"]
+  college_educ [pos="0,-2"]
+  bmi [pos="1,2"]
+  chol [pos="1,1"]
+  blood_pressure [pos="1,0"]
+  
+  blood_pressure_medication_2 [exposure, pos="4.5,0"]
+  bmi_2 [pos="3.5,2"]
+  chol_2 [pos="3.5,1"]
+  blood_pressure_2 [pos="3.5,-1"]
+  
+  age -> bmi
+  age -> blood_pressure
+  age -> chol
+  sex_at_birth -> bmi
+  sex_at_birth -> blood_pressure
+  sex_at_birth -> chol
+  simplified_race -> blood_pressure
+  simplified_race -> chol
+  income_thousands -> college_educ
+  income_thousands -> bmi
+  college_educ -> bmi
+  
+  bmi -> blood_pressure
+  bmi -> chol
+  blood_pressure -> blood_pressure_medication
+  chol -> blood_pressure_medication
+  
+  income_thousands -> blood_pressure_medication
+  college_educ -> blood_pressure_medication
+  
+  blood_pressure_medication -> bmi_2
+  blood_pressure_medication -> chol_2
+  blood_pressure_medication -> blood_pressure_2
+  
+  bmi -> bmi_2
+  chol -> chol_2
+  blood_pressure -> blood_pressure_2
+  
+  blood_pressure_medication -> blood_pressure_medication_2
+  
+  bmi_2 -> blood_pressure_medication_2
+  chol_2 -> blood_pressure_medication_2
+  blood_pressure_2 -> blood_pressure_medication_2
+  
+  age -> mortality
+  bmi -> mortality
+  chol -> mortality
+  blood_pressure -> mortality
+  blood_pressure_medication -> mortality
+  simplified_race -> mortality
+  sex_at_birth -> mortality
+  income_thousands -> mortality
+  college_educ -> mortality
+  
+  bmi_2 -> mortality
+  chol_2 -> mortality
+  blood_pressure_2 -> mortality
+  blood_pressure_medication_2 -> mortality
+}')
+
+# Convert to tidy format
+structured_tidy_full <- tidy_dagitty(structured_dag_full)
+
+# Prepare the time period overlay
+time1_box <- data.frame(
+  x = c(-0.5, 2.5, 2.5, -0.5, -0.5),
+  y = c(-2.5, -2.5, 2.5, 2.5, -2.5)
+)
+
+time2_box <- data.frame(
+  x = c(2.5, 5.5, 5.5, 2.5, 2.5),
+  y = c(-2.5, -2.5, 2.5, 2.5, -2.5)
+)
+
+# Define time period variable sets
+time1_vars <- c("age", "sex_at_birth", "simplified_race", "income_thousands", 
+                "college_educ", "bmi", "chol", "blood_pressure", "blood_pressure_medication")
+time2_vars <- c("bmi_2", "chol_2", "blood_pressure_2", "blood_pressure_medication_2")
+outcome_var <- "mortality"
+
+# Create the updated full plot with time period boundaries
+final_dag_plot_full <- ggplot() +
+  # Add time period backgrounds
+  geom_polygon(data = time1_box, aes(x = x, y = y), fill = "lightblue", alpha = 0.2) +
+  geom_polygon(data = time2_box, aes(x = x, y = y), fill = "lightgreen", alpha = 0.2) +
+  
+  # Add time period labels
+  annotate("text", x = 1, y = 2.3, label = "Time Period 1", fontface = "bold", size = 4) +
+  annotate("text", x = 4, y = 2.3, label = "Time Period 2", fontface = "bold", size = 4) +
+  
+  # Add DAG edges
+  geom_dag_edges_arc(data = structured_tidy_full$data,
+                   aes(x = x, y = y, xend = xend, yend = yend),
+                   edge_width = 0.5,
+                   arrow = grid::arrow(length = grid::unit(6, "pt"), type = "closed")) +
+  
+  # Time 1 nodes
+  geom_dag_node(data = subset(structured_tidy_full$data, 
+                            name %in% time1_vars) %>%
+                  distinct(name, x, y),
+                aes(x = x, y = y, fill = name),
+                size = 15, alpha = 0.7, shape = 21) +
+  
+  # Time 2 nodes
+  geom_dag_node(data = subset(structured_tidy_full$data, 
+                            name %in% time2_vars) %>%
+                  distinct(name, x, y),
+                aes(x = x, y = y, fill = name),
+                size = 15, alpha = 0.7, shape = 22) +
+  
+  # Outcome node
+  geom_dag_node(data = subset(structured_tidy_full$data, name == outcome_var) %>%
+                  distinct(name, x, y),
+                aes(x = x, y = y, fill = name),
+                size = 15, alpha = 0.7, shape = 23) +
+  
+  # Add text for nodes
+  geom_dag_text(data = structured_tidy_full$data %>% 
+                  distinct(name, x, y),
+                aes(x = x, y = y, label = name),
+                size = 3, color = "black", fontface = "bold") +
+  
+  # Set node colors
+  scale_fill_manual(values = c(
+    "mortality" = "#FF5555",                
+    "blood_pressure_medication" = "#5555FF", 
+    "blood_pressure_medication_2" = "#0000FF",
+    "age" = "#55AA55",                      
+    "sex_at_birth" = "#AA55AA",              
+    "simplified_race" = "#CD8500",           
+    "income_thousands" = "#00CDCD",         
+    "college_educ" = "#FF69B4",             
+    "bmi" = "#A52A2A",                     
+    "bmi_2" = "#8B0000",
+    "chol" = "#FFD700",                     
+    "chol_2" = "#DAA520",
+    "blood_pressure" = "#8E8E8E",
+    "blood_pressure_2" = "#4D4D4D"
+  )) +
+  
+  # Apply DAG theme
+  theme_dag() +
+  
+  # Add titles
+  labs(title = "Comprehensive Longitudinal DAG for Heart Disease Study",
+       subtitle = "Time-varying treatments, covariates, and mortality with all variables",
+       caption = "Circle = Time 1, Square = Time 2, Diamond = Outcome
+                 Blue rectangles = Time Period 1, Green rectangles = Time Period 2") +
+  
+  # Theme adjustments
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(face = "italic", hjust = 0)
+  )
+
+# Print the updated full DAG
+print(final_dag_plot_full)
+
+# Recalculate adjustment sets
+adjustment_time1_full <- adjustmentSets(
+  structured_dag_full,
+  exposure = "blood_pressure_medication",
+  outcome = c("mortality", "bmi_2", "chol_2", "blood_pressure_2", "blood_pressure_medication_2")
+)
+
+adjustment_time2_full <- adjustmentSets(
+  structured_dag_full,
+  exposure = "blood_pressure_medication_2",
+  outcome = "mortality"
+)
+
+print("Adjustment sets for time 1 treatment effect (full model):")
+print(adjustment_time1_full)
+
+print("Adjustment sets for time 2 treatment effect (full model):")
+print(adjustment_time2_full)
+```
+
+## LTMLE Estimation
+
+Use the `ltmle` package for this section. First fit a "naive model" that \textbf{does not} control for the time-dependent confounding. Then run a LTMLE model that does control for any time dependent confounding. Follow the same steps as in the TMLE section. Do you see a difference between the two estimates?
+
+```{r ltmle}
+# naive TMLE (no time-dependent confounding control)
+
+# Joint treatment (e.g., ever treated over two waves)
+heart_disease$ever_treated <- ifelse(
+  heart_disease$blood_pressure_medication == 1 | heart_disease$blood_pressure_medication_2 == 1, 1, 0
+)
+
+# Naive TMLE model
+naive_tmle <- tmle(
+  Y = heart_disease$mortality,
+  A = heart_disease$ever_treated,
+  W = heart_disease[, c("age", "sex_at_birth", "simplified_race", "college_educ", "income_thousands")],
+  family = "binomial",
+  Q.SL.library = SL.library,
+  g.SL.library = SL.library
+)
+summary(naive_tmle)
+
+
+#LTMLE
+
+library(ltmle)
+
+# Prepare dataset in wide format
+ltmle_data <- heart_disease[, c(
+  "age", "sex_at_birth", "simplified_race", "college_educ", "income_thousands",  # Baseline covariates
+  "bmi", "blood_pressure", "chol",                   # Time 1 covariates
+  "blood_pressure_medication",                      # Time 1 treatment
+  "bmi_2", "blood_pressure_2", "chol_2",            # Time 2 covariates
+  "blood_pressure_medication_2",                    # Time 2 treatment
+  "mortality"                                       # Outcome
+)]
+
+# Specify node types
+Anodes <- c("blood_pressure_medication", "blood_pressure_medication_2")
+Lnodes <- c("bmi", "blood_pressure", "chol", "bmi_2", "blood_pressure_2", "chol_2")
+Ynodes <- "mortality"
+
+abar <- list(
+  control = c(0, 0),   # Never treated at either time
+  treated = c(1, 1)    # Treated at both time points
+)
+
+
+# Fit LTMLE model
+ltmle_fit <- ltmle(
+  data = ltmle_data,
+  Anodes = Anodes,
+  Lnodes = Lnodes,
+  Ynodes = Ynodes,
+  survivalOutcome = FALSE,
+  SL.library = c("SL.mean", "SL.glm", "SL.bayesglm"),
+  abar = abar
+)
+summary(ltmle_fit)
+
+
+```
+
+Above I first tried to use my fully defined SL library for the LTMLE model as I defined the library for my naive model and TMLE above, but after leaving the code running for 7 hours, I stopped it, removed the more computationally intensive/slow learners: SL.glmnet, SL.randomForest, and SL.xgboost, and I just included "SL.mean", "SL.glm", "SL.bayesglm". After removing these learners, I see that LTMLE model shows a positive treatment effect (0.38) while the naive model shows a negative treatment effect (Additive Effect Parameter Estimate: -0.18309). The fact that adjusting for time-dependent confounding reversed the effect suggests that there was substantial time-dependent confounding. There was also a big change in the magnitude of the effect (odds ratio incerases from 0.48, harmful, to 5.67, beneficial).
+
+
+## Discussion Questions
+
+\begin{enumerate}
+    \item What sorts of time-dependent confounding should we be especially worried about? For instance, would we be concerned about a running variable for age the same way we might be concerned about blood pressure measured at two different times?
+\end{enumerate}
+
+I'd be especially worried about health measures or biomarkers that both respond to treatment and influence subsequent treatment decisions, because these create feedback loops that bias standard analyses. Blood pressure is a good example of this because it's affected by medication at time 1, then influences medication decisions at time 2, while also independently affecting mortality risk. This creates complex pathways that standard methods cannot get at (conventional approaches might introduce collider bias by adjusting for variables on the causal pathway). A running variable like age progresses independently of treatment. While age affects treatment decisions and outcomes, treatment doesn't affect aging itself, making it different from true time-varying confounders like blood pressure, BMI, or cholesterol. I think the most problematic time-dependent confounders are those that serve as both outcomes of previous treatments and determinants of future treatments, particularly when they're strong predictors of the final outcome. 
+
